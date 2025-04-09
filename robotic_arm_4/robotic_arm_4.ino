@@ -71,7 +71,7 @@ void notify() {
   if (Ps3.data.button.circle) {
     //if (pos_gripper_1 >0)
       //{
-+        controlServoWithAnalog(pos_bras_1, servo_bras_1, leftStickX);
++        controlServoWithAnalog(pos_bras_1, servo_bras_1);
       }  // Decrease servo position by 10 degrees
     //if (pos < 0) pos_base = 0;  // Limit to 0 degrees
     //else if (pos_gripper_1 < 0){}
@@ -82,7 +82,7 @@ void notify() {
            if (Ps3.data.button.triangle){
       //if (pos_gripper_2<180)
         //{
-          controlServoWithAnalog(pos_bras_2, servo_bras_2, leftStickX);
+          controlServoWithAnalog(pos_bras_2, servo_bras_2);
         }  // Increase servo position by 10 degrees
       //if (pos > 180) pos_base = 180;  // Limit to 180 degrees
       //else if (pos_gripper_2 > 180) {} 
@@ -93,7 +93,7 @@ void notify() {
   if (Ps3.data.button.cross) {
     //if (pos_gripper_2 >0)
       //{
-        controlServoWithAnalog(pos_pre_gripper, servo_pre_gripper, rightStickX);
+        controlServoWithAnalog(pos_pre_gripper, servo_pre_gripper);
       }  // Decrease servo position by 10 degrees
 
   //base servo motor
@@ -101,7 +101,7 @@ void notify() {
     if (Ps3.data.button.r1){
       //if (pos_base<180)
         //{
-          controlServoWithAnalog(pos_gripper_1, servo_gripper_1, rightStickX);
+          controlServoWithAnalog(pos_gripper_1, servo_gripper_1);
         }  // Increase servo position by 10 degrees
       //if (pos > 180) pos_base = 180;  // Limit to 180 degrees
       //else if (pos_base > 180) {} 
@@ -112,7 +112,7 @@ void notify() {
   if (Ps3.data.button.l1 ) {
     //if (pos_base >0)
       //{
-        controlServoWithAnalog(pos_gripper_2, servo_gripper_2, rightStickX);
+        controlServoWithAnalog(pos_gripper_2, servo_gripper_2);
       }  // Decrease servo position by 10 degrees
     //if (pos < 0) pos_base = 0;  // Limit to 0 degrees
     //else if (pos_base < 0){}
@@ -123,7 +123,7 @@ void notify() {
        if (Ps3.data.button.square){
       //if (pos_gripper_1<180)
         //{
-          controlServoWithAnalog(pos_base, servobase, leftStickX);
+          controlServoWithAnalog(pos_base, servobase);
         }  // Increase servo position by 10 degrees
       //if (pos > 180) pos_base = 180;  // Limit to 180 degrees
       //else if (pos_gripper_1 > 180) {} 
