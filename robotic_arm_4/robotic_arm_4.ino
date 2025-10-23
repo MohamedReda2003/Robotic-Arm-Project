@@ -1,185 +1,248 @@
 #include <Ps3Controller.h>
 #include <Adafruit_PWMServoDriver.h>
 #include <Wire.h>
+#include <EEPROM.h>
 
-// Define motor control pins
-
-
-// Define motor parameters
-
-
-
-
-// Create the PWM driver object for the PCA9685
 Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
-const int SERVOMIN = 150;  // Minimum pulse length count (out of 4096)
-const int SERVOMAX = 600;  // Maximum pulse length count (out of 4096)
 
-int servobase = 0;  // PCA9685 channel to which the servo is connected
-int servo_bras_1=8;
-int servo_bras_2=10;
-int servo_pre_gripper = 7;
-int servo_gripper_1 = 2;
-int servo_gripper_2 = 4;
+// Servo Configuration with Homing
+struct ServoConfig {
+  uint8_t channel;
+  int min_angle;
+  int max_angle;
+  int step_size;
+  int current_pos;
+  int home_pos;  // Added home position
+  float target_pos;      // ADD THIS
+  float velocity;        // ADD THIS
+};
 
+// EEPROM Configuration
+#define EEPROM_SIZE 512
+#define EEPROM_SIGNATURE 0x55AA
 
-int ser;
-int pos_base = 90; 
-int pos_bras_1 = 0; // Variable to store the servo position in degrees
-int pos_bras_2 =90;
-int pos_pre_gripper = 0;
-int pos_gripper_1 = 0;
-int pos_gripper_2 = 0;
+struct SavedPositions {
+  uint16_t signature;
+  int positions[6];
+};
 
-void controlServoWithAnalog(int &position, int servoChannel) {
-    // Get analog stick value (-128 to 127 after conversion)
-    int stickX = Ps3.data.analog.stick.lx - 128;
-    
-    // Dead zone threshold
-    const int deadZone = 20;
-    
-    // Calculate position change
-    int delta = 0;
-    if(stickX > deadZone) delta = 1;
-    else if(stickX < -deadZone) delta = -1;
+ServoConfig servos[] = {
+  // Channel, Min, Max, Step, CurrentPos, Home
+  {0,   0, 180, 1, 90, 90, 90.0, 0.0},   // Base (MG996)
+  {8,  30, 150, 1, 90, 90, 90.0, 0.0},   // Arm1 (MG995)
+  {10, 20, 160, 1, 90, 90, 90.0, 0.0},   // Arm2 (MG996)
+  {7,  10, 170, 1, 90, 90, 90.0, 0.0},   // Pre-gripper (SG90)
+  {2,   0, 180, 1, 90, 90, 90.0, 0.0},   // Gripper1 (SG90)
+  {4,   0, 180, 1, 90, 90, 90.0, 0.0}    // Gripper2 (MG996)
+};
 
-    // Update position with constraints
-    position = constrain(position + delta, 0, 180);
-    
-    // Apply to servo
-    pwm.setPWM(servoChannel, 0, map(position, 0, 180, SERVOMIN, SERVOMAX));
-    
-    // Optional debug output
-    Serial.print("Servo ");
-    Serial.print(servoChannel);
-    Serial.print(" position: ");
-    Serial.println(position);
+// PWM Configuration
+const int SERVO_FREQ = 50;
+const float ACCELERATION = 0.3;      // Speed increase rate
+const float MAX_VELOCITY = 2.5;      // Maximum speed
+const float DECELERATION = 0.85;     // Slowdown multiplier
+const float DEADZONE = 0.1;          // Stop threshold
+const int SERVOMIN = 150;
+const int SERVOMAX = 600;
+
+// Control Variables
+unsigned long lastUpdate = 0;
+const int UPDATE_INTERVAL = 10;
+const int HOMING_DELAY = 50;
+const int HOMING_SPEED = 1;
+
+// PS3 Control Mapping
+struct ControllerState {
+  int base = 0;
+  int arm1 = 8;
+  int arm2 = 10;
+  int pre_gripper = 7;
+  int gripper1 = 2;
+  int gripper2 = 4;
+} ctrlState;
+
+void updateServo(ServoConfig &servo, int direction) {
+  // Update target position based on input
+  if(direction != 0) {
+    servo.target_pos += direction * servo.step_size;
+    servo.target_pos = constrain(servo.target_pos, servo.min_angle, servo.max_angle);
+  }
+  
+  // Calculate distance to target
+  float distance = servo.target_pos - servo.current_pos;
+  
+  // Apply acceleration/deceleration
+  if(direction != 0) {
+    // Accelerate towards max velocity
+    servo.velocity += ACCELERATION * direction;
+    servo.velocity = constrain(servo.velocity, -MAX_VELOCITY, MAX_VELOCITY);
+  } else {
+    // Decelerate smoothly when no input
+    servo.velocity *= DECELERATION;
+    if(abs(servo.velocity) < DEADZONE) {
+      servo.velocity = 0;
+      servo.target_pos = servo.current_pos; // Lock to current position
+    }
+  }
+  
+  // Apply velocity with constraint checking
+  float new_pos = servo.current_pos + servo.velocity;
+  new_pos = constrain(new_pos, servo.min_angle, servo.max_angle);
+  
+  // Only update if position changed significantly
+  if(abs(new_pos - servo.current_pos) > 0.01) {
+    servo.current_pos = new_pos;
+    int pwm_value = map(round(servo.current_pos), 0, 180, SERVOMIN, SERVOMAX);
+    pwm.setPWM(servo.channel, 0, pwm_value);
+  }
+}
+void performHoming() {
+  Serial.println("\n=== Starting Homing Sequence ===");
+  
+  // Move to safe minimum positions
+  for(int i = 0; i < 6; i++) {
+    while(servos[i].current_pos > servos[i].min_angle) {
+      servos[i].current_pos -= HOMING_SPEED;
+      pwm.setPWM(servos[i].channel, 0, 
+                map(servos[i].current_pos, 0, 180, SERVOMIN, SERVOMAX));
+      delay(HOMING_DELAY);
+    }
+  }
+
+  // Move to home positions
+  for(int i = 0; i < 6; i++) {
+    while(servos[i].current_pos != servos[i].home_pos) {
+      int step = (servos[i].home_pos > servos[i].current_pos) ? 1 : -1;
+      servos[i].current_pos += step;
+      pwm.setPWM(servos[i].channel, 0, 
+                map(servos[i].current_pos, 0, 180, SERVOMIN, SERVOMAX));
+      delay(HOMING_DELAY);
+    }
+  }
+  
+  Serial.println("Homing complete!");
 }
 
-// Callback function for PS3 controller notifications
+void savePositions() {
+  SavedPositions save;
+  save.signature = EEPROM_SIGNATURE;
+  
+  for(int i = 0; i < 6; i++) {
+    save.positions[i] = servos[i].current_pos;
+  }
+
+  EEPROM.put(0, save);
+  EEPROM.commit();
+  Serial.println("Positions saved to EEPROM");
+}
+
+bool loadPositions() {
+  SavedPositions save;
+  EEPROM.get(0, save);
+
+  if(save.signature != EEPROM_SIGNATURE) {
+    Serial.println("No valid positions found");
+    return false;
+  }
+
+  for(int i = 0; i < 6; i++) {
+    servos[i].current_pos = constrain(save.positions[i],
+                                     servos[i].min_angle,
+                                     servos[i].max_angle);
+    pwm.setPWM(servos[i].channel, 0,
+              map(servos[i].current_pos, 0, 180, SERVOMIN, SERVOMAX));
+  }
+  
+  Serial.println("Positions loaded from EEPROM");
+  return true;
+}
+
 void notify() {
-  //buzzer
-  /*if (Ps3.data.button.cross){
-      tone(buzzer, 1000);
-      delay(50);
-      noTone(buzzer);
-  
-  }*/
-  
-  int leftStickX = Ps3.data.analog.stick.lx - 128;  // Convert to -128 to 127
-  int rightStickX = Ps3.data.analog.stick.rx - 128; // Convert to -128 to 127
-  if (Ps3.data.button.circle) {
-    //if (pos_gripper_1 >0)
-      //{
-+        controlServoWithAnalog(pos_bras_1, servo_bras_1);
-      }  // Decrease servo position by 10 degrees
-    //if (pos < 0) pos_base = 0;  // Limit to 0 degrees
-    //else if (pos_gripper_1 < 0){}
-      
-    //}
+  // Existing controller mapping
+  static unsigned long lastNotify = 0;
+  if(millis() - lastNotify < 5) return;  // 5ms debounce
+  lastNotify = millis();
+  ctrlState.base = 0;
+  if(Ps3.data.button.r1) ctrlState.base = 1;
+  if(Ps3.data.button.l1) ctrlState.base = -1;
 
+  ctrlState.arm1 = 0;
+  if(Ps3.data.button.r2) ctrlState.arm1 = 1;
+  if(Ps3.data.button.l2) ctrlState.arm1 = -1;
 
-           if (Ps3.data.button.triangle){
-      //if (pos_gripper_2<180)
-        //{
-          controlServoWithAnalog(pos_bras_2, servo_bras_2);
-        }  // Increase servo position by 10 degrees
-      //if (pos > 180) pos_base = 180;  // Limit to 180 degrees
-      //else if (pos_gripper_2 > 180) {} 
-      
-    //}
+  ctrlState.arm2 = 0;
+  if(Ps3.data.button.right) ctrlState.arm2 = 1;
+  if(Ps3.data.button.left) ctrlState.arm2 = -1;
 
-    // Check if L1 button is pressed
-  if (Ps3.data.button.cross) {
-    //if (pos_gripper_2 >0)
-      //{
-        controlServoWithAnalog(pos_pre_gripper, servo_pre_gripper);
-      }  // Decrease servo position by 10 degrees
+  ctrlState.pre_gripper = 0;
+  if(Ps3.data.button.up) ctrlState.pre_gripper = 1;
+  if(Ps3.data.button.down) ctrlState.pre_gripper = -1;
 
-  //base servo motor
-  //if (Ps3.data.button.r1) {
-    if (Ps3.data.button.r1){
-      //if (pos_base<180)
-        //{
-          controlServoWithAnalog(pos_gripper_1, servo_gripper_1);
-        }  // Increase servo position by 10 degrees
-      //if (pos > 180) pos_base = 180;  // Limit to 180 degrees
-      //else if (pos_base > 180) {} 
-      
-    //}
+  ctrlState.gripper1 = 0;
+  ctrlState.gripper2 = 0;
+  if(Ps3.data.button.square) ctrlState.gripper1 = 1;
+  if(Ps3.data.button.circle) ctrlState.gripper1 = -1;
+  if(Ps3.data.button.triangle) ctrlState.gripper2 = 1;
+  if(Ps3.data.button.cross) ctrlState.gripper2 = -1;
 
-    // Check if L1 button is pressed
-  if (Ps3.data.button.l1 ) {
-    //if (pos_base >0)
-      //{
-        controlServoWithAnalog(pos_gripper_2, servo_gripper_2);
-      }  // Decrease servo position by 10 degrees
-    //if (pos < 0) pos_base = 0;  // Limit to 0 degrees
-    //else if (pos_base < 0){}
-      
-    //}
-
-
-       if (Ps3.data.button.square){
-      //if (pos_gripper_1<180)
-        //{
-          controlServoWithAnalog(pos_base, servobase);
-        }  // Increase servo position by 10 degrees
-      //if (pos > 180) pos_base = 180;  // Limit to 180 degrees
-      //else if (pos_gripper_1 > 180) {} 
-      
-    //}
-
-    // Check if L1 button is pressed
-
-    //if (pos < 0) pos_base = 0;  // Limit to 0 degrees
-    //else if (pos_gripper_2 < 0){}
-      
-    //}
-  // Get Joystick value
-  //rightX = (Ps3.data.analog.stick.rx);
-  //rightY = (Ps3.data.analog.stick.ry);
+  // Add calibration shortcut (SELECT + START)
+  if(Ps3.data.button.select && Ps3.data.button.start) {
+    performHoming();
+    savePositions();
+    //Ps3.setLed(0, 0, 100); // Blue confirmation
+  }
 }
 
-
-
-
-// On Connection function
 void onConnect() {
-  // Print to Serial Monitor
-  Serial.println("Connected.");
+  Serial.println("PS3 Controller Connected!");
+  //Ps3.setLed(0, 100, 0); // Green light
 }
-
 
 void setup() {
-  // Initialize serial communication
-  Serial.begin(9600);
-
-  //Wire.setPins(14, 13); // Set the I2C pins before begin
+  Serial.begin(115200);
   Wire.begin();
   Wire.setClock(400000);
-  // Attach the PS3 controller callbacks
+  
+  // Initialize EEPROM
+  EEPROM.begin(EEPROM_SIZE);
+  
+  // PWM Initialization
+  pwm.begin();
+  pwm.setPWMFreq(SERVO_FREQ);
+  delay(500); // Allow capacitors to charge
+
+  // Position Initialization
+  if(digitalRead(0) == LOW) { // Use FLASH button for calibration
+    Serial.println("Entering calibration mode");
+    performHoming();
+    savePositions();
+  } else {
+    if(!loadPositions()) {
+      performHoming();
+      savePositions();
+    }
+  }
+
+  // PS3 Controller Setup
   Ps3.attach(notify);
   Ps3.attachOnConnect(onConnect);
   Ps3.begin("44:d8:32:6d:91:c0");
-
-  // Initialize motor control pins
-
-
-
-
-  // Initialize the PWM driver for the servo
-  pwm.begin();
-  pwm.setPWMFreq(60);  // Analog servos run at ~60 Hz
-
-  // Attach onPress callback
-
 }
 
 void loop() {
-  // Main loop
-  if (!Ps3.isConnected()) {
-    Serial.println("Not connected yet!..");
-    delay(2000);
+  if(millis() - lastUpdate > UPDATE_INTERVAL) {
+    updateServo(servos[0], ctrlState.base);
+    updateServo(servos[1], ctrlState.arm1);
+    updateServo(servos[2], ctrlState.arm2);
+    updateServo(servos[3], ctrlState.pre_gripper);
+    updateServo(servos[4], ctrlState.gripper1);
+    updateServo(servos[5], ctrlState.gripper2);
+
+    lastUpdate = millis();
+  }
+
+  if(!Ps3.isConnected()) {
+    Serial.println("Controller disconnected");
+    delay(200);
   }
 }

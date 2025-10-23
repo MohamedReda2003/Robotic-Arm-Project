@@ -13,6 +13,8 @@ struct ServoConfig {
   int step_size;
   int current_pos;
   int home_pos;  // Added home position
+  float target_pos;      // ADD THIS
+  float velocity;        // ADD THIS
 };
 
 // EEPROM Configuration
@@ -26,22 +28,26 @@ struct SavedPositions {
 
 ServoConfig servos[] = {
   // Channel, Min, Max, Step, CurrentPos, Home
-  {0,   0, 180, 2, 90, 90},   // Base (MG996)
-  {8,  30, 150, 2, 90, 90},   // Arm1 (MG995)
-  {10, 20, 160, 2, 90, 90},   // Arm2 (MG996)
-  {7,  10, 170, 2, 90, 90},   // Pre-gripper (SG90)
-  {2,   0, 180, 2, 90, 90},   // Gripper1 (SG90)
-  {4,   0, 180, 2, 90, 90}    // Gripper2 (MG996)
+  {0,   0, 180, 1, 90, 90, 90.0, 0.0},   // Base (MG996)
+  {8,  30, 150, 1, 90, 90, 90.0, 0.0},   // Arm1 (MG995)
+  {10, 20, 160, 1, 90, 90, 90.0, 0.0},   // Arm2 (MG996)
+  {7,  10, 170, 1, 90, 90, 90.0, 0.0},   // Pre-gripper (SG90)
+  {2,   0, 180, 1, 90, 90, 90.0, 0.0},   // Gripper1 (SG90)
+  {4,   0, 180, 1, 90, 90, 90.0, 0.0}    // Gripper2 (MG996)
 };
 
 // PWM Configuration
 const int SERVO_FREQ = 50;
+const float ACCELERATION = 0.3;      // Speed increase rate
+const float MAX_VELOCITY = 2.5;      // Maximum speed
+const float DECELERATION = 0.85;     // Slowdown multiplier
+const float DEADZONE = 0.1;          // Stop threshold
 const int SERVOMIN = 150;
 const int SERVOMAX = 600;
 
 // Control Variables
 unsigned long lastUpdate = 0;
-const int UPDATE_INTERVAL = 20;
+const int UPDATE_INTERVAL = 10;
 const int HOMING_DELAY = 50;
 const int HOMING_SPEED = 1;
 
@@ -167,7 +173,7 @@ void onConnect() {
 void setup() {
   Serial.begin(115200);
   Wire.begin();
-  Wire.setClock(400000);
+  //Wire.setClock(400000);
   
   // Initialize EEPROM
   EEPROM.begin(EEPROM_SIZE);
